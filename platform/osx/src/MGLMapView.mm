@@ -551,7 +551,6 @@ public:
     [self deselectAnnotation:self.selectedAnnotation];
     if (!self.dormant && !newWindow) {
         self.dormant = YES;
-        _mbglMap->pause();
     }
     
     [self.window removeObserver:self forKeyPath:@"contentLayoutRect"];
@@ -561,7 +560,6 @@ public:
 - (void)viewDidMoveToWindow {
     NSWindow *window = self.window;
     if (self.dormant && window) {
-        _mbglMap->resume();
         self.dormant = NO;
     }
     
@@ -697,7 +695,7 @@ public:
         NSUInteger cacheSize = zoomFactor * cpuFactor * memoryFactor * sizeFactor * 0.5;
         
         _mbglMap->setSourceTileCacheSize(cacheSize);
-        _mbglMap->renderSync();
+        _mbglMap->render();
         
 //        [self updateUserLocationAnnotationView];
     }
