@@ -396,18 +396,29 @@ void GLFWView::onMouseMove(GLFWwindow *window, double x, double y) {
 }
 
 void GLFWView::run() {
-    while (!glfwWindowShouldClose(window)) {
-        glfwWaitEvents();
+    auto callback = [&] {
+        if (glfwWindowShouldClose(window)) {
+            timer.stop();
+            runLoop.stop();
+
+            return;
+        }
+
+        glfwPollEvents();
+
         const bool dirty = !clean.test_and_set();
         if (dirty) {
             const double started = glfwGetTime();
-            map->renderSync();
+            map->render();
             report(1000 * (glfwGetTime() - started));
             if (benchmark) {
                 map->update(mbgl::Update::Repaint);
             }
         }
-    }
+    };
+
+    timer.start(mbgl::Duration::zero(), mbgl::Milliseconds(1000 / 60), callback);
+    runLoop.run();
 }
 
 float GLFWView::getPixelRatio() const {
