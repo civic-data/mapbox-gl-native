@@ -149,7 +149,7 @@ private:
 
 OnlineFileSource::OnlineFileSource()
     : thread(std::make_unique<util::Thread<Impl>>(
-          util::ThreadContext{ "OnlineFileSource", util::ThreadType::Unknown, util::ThreadPriority::Low }, 0)) {
+          util::ThreadContext{ "OnlineFileSource", util::ThreadPriority::Low }, 0)) {
 }
 
 OnlineFileSource::~OnlineFileSource() = default;

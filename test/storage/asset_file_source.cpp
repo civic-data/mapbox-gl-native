@@ -70,7 +70,7 @@ TEST_F(Storage, AssetStress) {
 
     std::vector<std::unique_ptr<util::Thread<TestWorker>>> threads;
     std::vector<std::unique_ptr<mbgl::WorkRequest>> requests;
-    util::ThreadContext context = { "Test", util::ThreadType::Map, util::ThreadPriority::Regular };
+    util::ThreadContext context = { "Test" };
 
     for (unsigned i = 0; i < numThreads; ++i) {
         std::unique_ptr<util::Thread<TestWorker>> thread =

@@ -4,7 +4,6 @@
 #include <mbgl/util/exception.hpp>
 #include <mbgl/util/chrono.hpp>
 #include <mbgl/util/run_loop.hpp>
-#include <mbgl/util/thread_context.hpp>
 
 #include <future>
 
@@ -19,7 +18,6 @@ TEST_F(Storage, HTTPTest) {
     std::unique_ptr<FileRequest> req1 = fs.request({ Resource::Unknown, "http://127.0.0.1:3000/test" },
                [&](Response res) {
         req1.reset();
-        EXPECT_TRUE(util::ThreadContext::currentlyOn(util::ThreadType::Main));
         EXPECT_EQ(nullptr, res.error);
         ASSERT_TRUE(res.data.get());
         EXPECT_EQ("Hello World!", *res.data);
@@ -44,7 +42,6 @@ TEST_F(Storage, HTTP404) {
     std::unique_ptr<FileRequest> req2 = fs.request({ Resource::Unknown, "http://127.0.0.1:3000/doesnotexist" },
                [&](Response res) {
         req2.reset();
-        EXPECT_TRUE(util::ThreadContext::currentlyOn(util::ThreadType::Main));
         ASSERT_NE(nullptr, res.error);
         EXPECT_EQ(Response::Error::Reason::NotFound, res.error->reason);
         EXPECT_EQ("HTTP status code 404", res.error->message);
@@ -70,7 +67,6 @@ TEST_F(Storage, HTTPTile404) {
     std::unique_ptr<FileRequest> req2 = fs.request({ Resource::Tile, "http://127.0.0.1:3000/doesnotexist" },
                [&](Response res) {
         req2.reset();
-        EXPECT_TRUE(util::ThreadContext::currentlyOn(util::ThreadType::Main));
         EXPECT_TRUE(res.noContent);
         EXPECT_FALSE(bool(res.error));
         EXPECT_FALSE(bool(res.data));
@@ -120,7 +116,6 @@ TEST_F(Storage, HTTP204) {
     std::unique_ptr<FileRequest> req2 = fs.request({ Resource::Unknown, "http://127.0.0.1:3000/no-content" },
                [&](Response res) {
         req2.reset();
-        EXPECT_TRUE(util::ThreadContext::currentlyOn(util::ThreadType::Main));
         EXPECT_TRUE(res.noContent);
         EXPECT_FALSE(bool(res.error));
         EXPECT_FALSE(bool(res.data));
@@ -145,7 +140,6 @@ TEST_F(Storage, HTTP500) {
     std::unique_ptr<FileRequest> req3 = fs.request({ Resource::Unknown, "http://127.0.0.1:3000/permanent-error" },
                [&](Response res) {
         req3.reset();
-        EXPECT_TRUE(util::ThreadContext::currentlyOn(util::ThreadType::Main));
         ASSERT_NE(nullptr, res.error);
         EXPECT_EQ(Response::Error::Reason::Server, res.error->reason);
         EXPECT_EQ("HTTP status code 500", res.error->message);

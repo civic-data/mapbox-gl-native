@@ -303,7 +303,6 @@ void Style::onLowMemory() {
 }
 
 void Style::setObserver(Observer* observer_) {
-    assert(util::ThreadContext::currentlyOn(util::ThreadType::Map));
     observer = observer_;
 }
 
