@@ -11,9 +11,6 @@
       ],
 
       'sources': [
-        '../platform/default/async_task.cpp',
-        '../platform/default/run_loop.cpp',
-        '../platform/default/timer.cpp',
         '../platform/default/default_file_source.cpp',
         '../platform/default/online_file_source.cpp',
         '../platform/default/mbgl/storage/offline.hpp',
@@ -24,6 +21,9 @@
         '../platform/default/mbgl/storage/offline_download.cpp',
         '../platform/default/sqlite3.hpp',
         '../platform/default/sqlite3.cpp',
+        '../platform/darwin/src/async_task.cpp',
+        '../platform/darwin/src/run_loop.cpp',
+        '../platform/darwin/src/timer.cpp',
         '../platform/darwin/src/log_nslog.mm',
         '../platform/darwin/src/string_nsstring.mm',
         '../platform/darwin/src/application_root.mm',
@@ -76,7 +76,6 @@
 
       'variables': {
         'cflags_cc': [
-          '<@(libuv_cflags)',
           '<@(boost_cflags)',
           '<@(sqlite_cflags)',
           '<@(zlib_cflags)',
@@ -88,7 +87,6 @@
           '<@(zlib_ldflags)',
         ],
         'libraries': [
-          '<@(libuv_static_libs)',
           '<@(sqlite_static_libs)',
           '<@(zlib_static_libs)',
           '$(SDKROOT)/System/Library/Frameworks/CoreGraphics.framework',
