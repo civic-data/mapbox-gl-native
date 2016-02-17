@@ -13,6 +13,16 @@
       'include_dirs': [
         '../include',
       ],
+
+      'variables': {
+        'libraries': [
+          '$(SDKROOT)/System/Library/Frameworks/OpenGL.framework',
+        ],
+      },
+
+      'link_settings': {
+        'libraries': [ '<@(libraries)' ],
+      },
     },
   ],
 }
