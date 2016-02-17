@@ -105,14 +105,12 @@ void HeadlessView::createContext() {
     };
     glxPbuffer = glXCreatePbuffer(xDisplay, fbConfigs[0], pbufferAttributes);
 #endif
-}
 
-bool HeadlessView::isActive() const {
-    return std::this_thread::get_id() == thread;
+    loadExtensions();
 }
 
 void HeadlessView::resizeFramebuffer() {
-    assert(isActive());
+    assert(active);
 
     if (!needsResize) return;
 
@@ -170,7 +168,7 @@ void HeadlessView::resize(const uint16_t width, const uint16_t height) {
 }
 
 PremultipliedImage HeadlessView::readStillImage() {
-    assert(isActive());
+    assert(active);
 
     const unsigned int w = dimensions[0] * pixelRatio;
     const unsigned int h = dimensions[1] * pixelRatio;
@@ -191,7 +189,7 @@ PremultipliedImage HeadlessView::readStillImage() {
 }
 
 void HeadlessView::clearBuffers() {
-    assert(isActive());
+    assert(active);
 
     MBGL_CHECK_ERROR(glBindFramebufferEXT(GL_FRAMEBUFFER_EXT, 0));
 
@@ -230,10 +228,6 @@ HeadlessView::~HeadlessView() {
 #endif
 }
 
-void HeadlessView::notify() {
-    // no-op
-}
-
 float HeadlessView::getPixelRatio() const {
     return pixelRatio;
 }
@@ -248,10 +242,7 @@ std::array<uint16_t, 2> HeadlessView::getFramebufferSize() const {
 }
 
 void HeadlessView::activate() {
-    if (thread != std::thread::id()) {
-        throw std::runtime_error("OpenGL context was already current");
-    }
-    thread = std::this_thread::get_id();
+    active = true;
 
     if (!glContext) {
         createContext();
@@ -270,15 +261,10 @@ void HeadlessView::activate() {
     }
 #endif
 
-    loadExtensions();
+    resizeFramebuffer();
 }
 
 void HeadlessView::deactivate() {
-    if (thread == std::thread::id()) {
-        throw std::runtime_error("OpenGL context was not current");
-    }
-    thread = std::thread::id();
-
 #if MBGL_USE_CGL
     CGLError error = CGLSetCurrentContext(nullptr);
     if (error != kCGLNoError) {
@@ -291,18 +277,12 @@ void HeadlessView::deactivate() {
         throw std::runtime_error("Removing OpenGL context failed.\n");
     }
 #endif
+
+    active = false;
 }
 
 void HeadlessView::invalidate() {
-    // no-op
-}
-
-void HeadlessView::beforeRender() {
-    resizeFramebuffer();
-}
-
-void HeadlessView::afterRender() {
-    // no-op
+    assert(false);
 }
 
 } // namespace mbgl

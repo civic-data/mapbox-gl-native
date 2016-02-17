@@ -33,12 +33,10 @@ public:
     std::array<uint16_t, 2> getSize() const override;
     std::array<uint16_t, 2> getFramebufferSize() const override;
 
+    void invalidate() override;
     void activate() override;
     void deactivate() override;
-    void notify() override;
-    void invalidate() override;
-    void beforeRender() override;
-    void afterRender() override;
+
     PremultipliedImage readStillImage() override;
 
     void resizeFramebuffer();
@@ -48,9 +46,7 @@ private:
     void createContext();
     void loadExtensions();
     void clearBuffers();
-    bool isActive() const;
 
-private:
     std::shared_ptr<HeadlessDisplay> display;
     const float pixelRatio;
     std::array<uint16_t, 2> dimensions;
@@ -68,12 +64,11 @@ private:
 #endif
 
     bool extensionsLoaded = false;
+    bool active = false;
 
     GLuint fbo = 0;
     GLuint fboDepthStencil = 0;
     GLuint fboColor = 0;
-
-    std::thread::id thread;
 };
 
 } // namespace mbgl

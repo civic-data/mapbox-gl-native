@@ -409,7 +409,18 @@ void GLFWView::run() {
         const bool dirty = !clean.test_and_set();
         if (dirty) {
             const double started = glfwGetTime();
+
+            glfwMakeContextCurrent(window);
+            glViewport(0, 0, fbWidth, fbHeight);
+
             map->render();
+
+            if (showClipMasks) {
+                renderClipMasks();
+            }
+
+            glfwSwapBuffers(window);
+
             report(1000 * (glfwGetTime() - started));
             if (benchmark) {
                 map->update(mbgl::Update::Repaint);
@@ -441,29 +452,9 @@ void GLFWView::deactivate() {
     glfwMakeContextCurrent(nullptr);
 }
 
-void GLFWView::notify() {
-    glfwPostEmptyEvent();
-}
-
 void GLFWView::invalidate() {
     clean.clear();
     glfwPostEmptyEvent();
-}
-
-void GLFWView::beforeRender() {
-    // This is called from the map thread but `width` and `height`
-    // can be accessed with no race because the main thread is blocked
-    // when we render. This will be more straightforward when we move
-    // rendering to the main thread.
-    glViewport(0, 0, fbWidth, fbHeight);
-}
-
-void GLFWView::afterRender() {
-    if (showClipMasks) {
-        renderClipMasks();
-    }
-
-    glfwSwapBuffers(window);
 }
 
 void GLFWView::renderClipMasks() {

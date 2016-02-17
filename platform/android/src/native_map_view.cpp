@@ -187,35 +187,6 @@ void NativeMapView::invalidate() {
     detach_jni_thread(vm, &env, detach);
 }
 
-void NativeMapView::beforeRender() {
-    mbgl::Log::Debug(mbgl::Event::Android, "NativeMapView::beforeRender()");
-    // no-op
-}
-
-void NativeMapView::afterRender() {
-    mbgl::Log::Debug(mbgl::Event::Android, "NativeMapView::afterRender()");
-
-    assert(vm != nullptr);
-    assert(obj != nullptr);
-
-    if ((display != EGL_NO_DISPLAY) && (surface != EGL_NO_SURFACE)) {
-        if (!eglSwapBuffers(display, surface)) {
-            mbgl::Log::Error(mbgl::Event::OpenGL, "eglSwapBuffers() returned error %d",
-                             eglGetError());
-            throw new std::runtime_error("eglSwapBuffers() failed");
-        }
-
-        updateFps();
-    } else {
-        mbgl::Log::Info(mbgl::Event::Android, "Not swapping as we are not ready");
-    }
-}
-
-void NativeMapView::notify() {
-    mbgl::Log::Debug(mbgl::Event::Android, "NativeMapView::notify()");
-    // noop
-}
-
 mbgl::Map &NativeMapView::getMap() { return *map; }
 
 mbgl::DefaultFileSource &NativeMapView::getFileSource() { return *fileSource; }

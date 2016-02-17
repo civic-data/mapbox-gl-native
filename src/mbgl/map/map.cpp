@@ -465,13 +465,17 @@ void Map::addCustomLayer(const std::string& id,
                          CustomLayerDeinitializeFunction deinitialize,
                          void* context_,
                          const char* before) {
+    view.activate();
     context->addLayer(
         std::make_unique<CustomLayer>(id, initialize, render_, deinitialize, context_),
         before ? std::string(before) : optional<std::string>());
+    view.deactivate();
 }
 
 void Map::removeCustomLayer(const std::string& id) {
+    view.activate();
     context->removeLayer(id);
+    view.deactivate();
 }
 
 #pragma mark - Toggles

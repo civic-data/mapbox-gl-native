@@ -35,7 +35,6 @@ MapContext::MapContext(View& view_, FileSource& fileSource_, MapMode mode_, GLCo
       data(*dataPtr),
       asyncUpdate([this] { update(); }),
       texturePool(std::make_unique<gl::TexturePool>()) {
-    view.activate();
 }
 
 MapContext::~MapContext() {
@@ -44,7 +43,7 @@ MapContext::~MapContext() {
 }
 
 void MapContext::cleanup() {
-    view.notify();
+    view.activate();
 
     styleRequest = nullptr;
 
@@ -159,7 +158,9 @@ void MapContext::update() {
     if (data.mode == MapMode::Continuous) {
         view.invalidate();
     } else if (callback && style->isLoaded()) {
+        view.activate();
         renderSync(transformState, frameData);
+        view.deactivate();
     }
 
     updateFlags = Update::Nothing;
@@ -205,8 +206,6 @@ bool MapContext::renderSync(const TransformState& state, const FrameData& frame)
         return false;
     }
 
-    view.beforeRender();
-
     transformState = state;
 
     if (!painter) painter = std::make_unique<Painter>(data, transformState, glObjectStore);
@@ -219,8 +218,6 @@ bool MapContext::renderSync(const TransformState& state, const FrameData& frame)
 
     // Cleanup OpenGL objects that we abandoned since the last render call.
     glObjectStore.performCleanup();
-
-    view.afterRender();
 
     if (style->hasTransitions()) {
         updateFlags |= Update::Zoom;

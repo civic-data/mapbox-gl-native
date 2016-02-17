@@ -24,10 +24,7 @@ public:
     std::array<uint16_t, 2> getFramebufferSize() const override;
     void activate() override;
     void deactivate() override;
-    void notify() override;
     void invalidate() override;
-    void beforeRender() override;
-    void afterRender() override;
 
     void notifyMapChange(mbgl::MapChange) override;
 
