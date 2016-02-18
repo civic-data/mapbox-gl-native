@@ -1,5 +1,4 @@
 #include <mbgl/map/map.hpp>
-#include <mbgl/map/map_context.hpp>
 #include <mbgl/map/camera.hpp>
 #include <mbgl/map/view.hpp>
 #include <mbgl/map/transform.hpp>
@@ -7,56 +6,177 @@
 #include <mbgl/map/map_data.hpp>
 #include <mbgl/annotation/point_annotation.hpp>
 #include <mbgl/annotation/shape_annotation.hpp>
+#include <mbgl/style/style.hpp>
 #include <mbgl/style/style_layer.hpp>
 #include <mbgl/layer/custom_layer.hpp>
-
+#include <mbgl/renderer/painter.hpp>
+#include <mbgl/storage/file_source.hpp>
+#include <mbgl/storage/resource.hpp>
+#include <mbgl/storage/response.hpp>
+#include <mbgl/gl/gl_object_store.hpp>
+#include <mbgl/gl/texture_pool.hpp>
 #include <mbgl/util/projection.hpp>
 #include <mbgl/util/math.hpp>
+#include <mbgl/util/exception.hpp>
+#include <mbgl/util/async_task.hpp>
+#include <mbgl/util/mapbox.hpp>
 
 namespace mbgl {
 
-Map::Map(View& view_, FileSource& fileSource, MapMode mapMode, GLContextMode contextMode, ConstrainMode constrainMode)
-    : view(view_),
-      transform(std::make_unique<Transform>(view, constrainMode)),
-      context(std::make_unique<MapContext>(
-        view, fileSource, mapMode, contextMode, view.getPixelRatio())),
-      data(&context->getData())
-{
+enum class RenderState {
+    never,
+    partial,
+    fully
+};
+
+class Map::Impl : public Style::Observer {
+public:
+    Impl(View&, FileSource&, MapMode, GLContextMode, ConstrainMode);
+
+    void onResourceLoaded() override;
+    void onResourceError(std::exception_ptr) override;
+
+    void update();
+    void render();
+
+    void loadStyleJSON(const std::string& json, const std::string& base);
+
+    View& view;
+    FileSource& fileSource;
+
+    RenderState renderState = RenderState::never;
+    Transform transform;
+
+    std::unique_ptr<MapData> dataPtr;
+    MapData& data;
+
+    gl::GLObjectStore glObjectStore;
+    Update updateFlags = Update::Nothing;
+    util::AsyncTask asyncUpdate;
+
+    std::unique_ptr<gl::TexturePool> texturePool;
+    std::unique_ptr<Painter> painter;
+    std::unique_ptr<Style> style;
+
+    std::string styleURL;
+    std::string styleJSON;
+
+    std::unique_ptr<FileRequest> styleRequest;
+
+    Map::StillImageCallback callback;
+    size_t sourceCacheSize;
+    TransformState transformState;
+    FrameData frameData;
+};
+
+Map::Map(View& view, FileSource& fileSource, MapMode mapMode, GLContextMode contextMode, ConstrainMode constrainMode)
+    : impl(std::make_unique<Impl>(view, fileSource, mapMode, contextMode, constrainMode)) {
     view.initialize(this);
     update(Update::Dimensions);
 }
 
+Map::Impl::Impl(View& view_, FileSource& fileSource_, MapMode mode_, GLContextMode contextMode_, ConstrainMode constrainMode_)
+    : view(view_),
+      fileSource(fileSource_),
+      transform(view, constrainMode_),
+      dataPtr(std::make_unique<MapData>(mode_, contextMode_, view_.getPixelRatio())),
+      data(*dataPtr),
+      asyncUpdate([this] { update(); }),
+      texturePool(std::make_unique<gl::TexturePool>()) {
+}
+
 Map::~Map() {
-    context->cleanup();
+    impl->view.activate();
+
+    impl->styleRequest = nullptr;
+
+    // Explicit resets currently necessary because these abandon resources that need to be
+    // cleaned up by glObjectStore.performCleanup();
+    impl->style.reset();
+    impl->painter.reset();
+    impl->texturePool.reset();
+    impl->dataPtr.reset();
+
+    impl->glObjectStore.performCleanup();
+
+    impl->view.deactivate();
 }
 
 void Map::renderStill(StillImageCallback callback) {
-    context->renderStill(transform->getState(),
-                    FrameData{ view.getFramebufferSize() }, callback);
+    if (!callback) {
+        Log::Error(Event::General, "StillImageCallback not set");
+        return;
+    }
+
+    if (impl->data.mode != MapMode::Still) {
+        callback(std::make_exception_ptr(util::MisuseException("Map is not in still image render mode")), {});
+        return;
+    }
+
+    if (impl->callback) {
+        callback(std::make_exception_ptr(util::MisuseException("Map is currently rendering an image")), {});
+        return;
+    }
+
+    if (!impl->style) {
+        callback(std::make_exception_ptr(util::MisuseException("Map doesn't have a style")), {});
+        return;
+    }
+
+    if (impl->style->getLastError()) {
+        callback(impl->style->getLastError(), {});
+        return;
+    }
+
+    impl->callback = callback;
+    impl->transformState = impl->transform.getState();
+    impl->frameData = FrameData{ impl->view.getFramebufferSize() };
+
+    impl->updateFlags |= Update::RenderStill;
+    impl->asyncUpdate.send();
+}
+
+void Map::update(Update flags) {
+    if (flags & Update::Dimensions) {
+        impl->transform.resize(impl->view.getSize());
+    }
+
+    impl->transformState = impl->transform.getState();
+    impl->updateFlags |= flags;
+
+    impl->asyncUpdate.send();
 }
 
 void Map::render() {
-    if (renderState == RenderState::never) {
-        view.notifyMapChange(MapChangeWillStartRenderingMap);
+    if (!impl->style) {
+        return;
     }
 
-    view.notifyMapChange(MapChangeWillStartRenderingFrame);
+    if (impl->renderState == RenderState::never) {
+        impl->view.notifyMapChange(MapChangeWillStartRenderingMap);
+    }
 
-    const Update flags = transform->updateTransitions(Clock::now());
-    const bool fullyLoaded = context->renderSync(transform->getState(), FrameData { view.getFramebufferSize() });
+    impl->view.notifyMapChange(MapChangeWillStartRenderingFrame);
 
-    view.notifyMapChange(fullyLoaded ?
+    const Update flags = impl->transform.updateTransitions(Clock::now());
+
+    impl->transformState = impl->transform.getState();
+    impl->frameData = FrameData { impl->view.getFramebufferSize() };
+
+    impl->render();
+
+    impl->view.notifyMapChange(isFullyLoaded() ?
         MapChangeDidFinishRenderingFrameFullyRendered :
         MapChangeDidFinishRenderingFrame);
 
-    if (!fullyLoaded) {
-        renderState = RenderState::partial;
-    } else if (renderState != RenderState::fully) {
-        renderState = RenderState::fully;
-        view.notifyMapChange(MapChangeDidFinishRenderingMapFullyRendered);
-        if (data->loading) {
-            data->loading = false;
-            view.notifyMapChange(MapChangeDidFinishLoadingMap);
+    if (!isFullyLoaded()) {
+        impl->renderState = RenderState::partial;
+    } else if (impl->renderState != RenderState::fully) {
+        impl->renderState = RenderState::fully;
+        impl->view.notifyMapChange(MapChangeDidFinishRenderingMapFullyRendered);
+        if (impl->data.loading) {
+            impl->data.loading = false;
+            impl->view.notifyMapChange(MapChangeDidFinishLoadingMap);
         }
     }
 
@@ -67,83 +187,193 @@ void Map::render() {
     }
 }
 
-void Map::update(Update flags) {
-    if (flags & Update::Dimensions) {
-        transform->resize(view.getSize());
+void Map::Impl::update() {
+    if (!style) {
+        updateFlags = Update::Nothing;
     }
-    context->triggerUpdate(transform->getState(), flags);
+
+    if (updateFlags == Update::Nothing || (data.mode == MapMode::Still && !callback)) {
+        return;
+    }
+
+    data.setAnimationTime(Clock::now());
+
+    if (style->loaded && updateFlags & Update::Annotations) {
+        data.getAnnotationManager()->updateStyle(*style);
+        updateFlags |= Update::Classes;
+    }
+
+    if (updateFlags & Update::Classes) {
+        style->cascade();
+    }
+
+    if (updateFlags & Update::Classes || updateFlags & Update::Zoom) {
+        style->recalculate(transformState.getZoom());
+    }
+
+    style->update(transformState, *texturePool);
+
+    if (data.mode == MapMode::Continuous) {
+        view.invalidate();
+    } else if (callback && style->isLoaded()) {
+        view.activate();
+        render();
+        view.deactivate();
+    }
+
+    updateFlags = Update::Nothing;
+}
+
+void Map::Impl::render() {
+    if (!painter) {
+        painter = std::make_unique<Painter>(data, transformState, glObjectStore);
+    }
+
+    painter->render(*style,
+                    frameData,
+                    data.getAnnotationManager()->getSpriteAtlas());
+
+    if (data.mode == MapMode::Still) {
+        callback(nullptr, view.readStillImage());
+        callback = nullptr;
+    }
+
+    glObjectStore.performCleanup();
+
+    if (style->hasTransitions()) {
+        updateFlags |= Update::Zoom;
+        asyncUpdate.send();
+    } else if (painter->needsAnimation()) {
+        updateFlags |= Update::Repaint;
+        asyncUpdate.send();
+    }
 }
 
 #pragma mark - Style
 
-void Map::setStyleURL(const std::string &url) {
-    view.notifyMapChange(MapChangeWillStartLoadingMap);
-    context->setStyleURL(url);
+void Map::setStyleURL(const std::string& url) {
+    if (impl->styleURL == url) {
+        return;
+    }
+
+    impl->view.notifyMapChange(MapChangeWillStartLoadingMap);
+
+    impl->styleRequest = nullptr;
+    impl->styleURL = url;
+    impl->styleJSON.clear();
+
+    impl->style = std::make_unique<Style>(impl->data, impl->fileSource);
+
+    const size_t pos = impl->styleURL.rfind('/');
+    std::string base = "";
+    if (pos != std::string::npos) {
+        base = impl->styleURL.substr(0, pos + 1);
+    }
+
+    impl->styleRequest = impl->fileSource.request(Resource::style(impl->styleURL), [this, base](Response res) {
+        if (res.error) {
+            if (res.error->reason == Response::Error::Reason::NotFound &&
+                util::mapbox::isMapboxURL(impl->styleURL)) {
+                Log::Error(Event::Setup, "style %s could not be found or is an incompatible legacy map or style", impl->styleURL.c_str());
+            } else {
+                Log::Error(Event::Setup, "loading style failed: %s", res.error->message.c_str());
+                impl->data.loading = false;
+            }
+        } else if (res.notModified || res.noContent) {
+            return;
+        } else {
+            impl->loadStyleJSON(*res.data, base);
+        }
+    });
 }
 
 void Map::setStyleJSON(const std::string& json, const std::string& base) {
-    view.notifyMapChange(MapChangeWillStartLoadingMap);
-    context->setStyleJSON(json, base);
+    if (impl->styleJSON == json) {
+        return;
+    }
+
+    impl->view.notifyMapChange(MapChangeWillStartLoadingMap);
+
+    impl->styleURL.clear();
+    impl->styleJSON.clear();
+    impl->style = std::make_unique<Style>(impl->data, impl->fileSource);
+
+    impl->loadStyleJSON(json, base);
+}
+
+void Map::Impl::loadStyleJSON(const std::string& json, const std::string& base) {
+    style->setJSON(json, base);
+    style->setObserver(this);
+    styleJSON = json;
+
+    // force style cascade, causing all pending transitions to complete.
+    style->cascade();
+
+    // set loading here so we don't get a false loaded event as soon as map is
+    // created but before a style is loaded
+    data.loading = true;
+
+    updateFlags |= Update::DefaultTransition | Update::Classes | Update::Zoom | Update::Annotations;
+    asyncUpdate.send();
 }
 
 std::string Map::getStyleURL() const {
-    return context->getStyleURL();
+    return impl->styleURL;
 }
 
 std::string Map::getStyleJSON() const {
-    return context->getStyleJSON();
+    return impl->styleJSON;
 }
 
 #pragma mark - Transitions
 
 void Map::cancelTransitions() {
-    transform->cancelTransitions();
+    impl->transform.cancelTransitions();
     update(Update::Repaint);
 }
 
 void Map::setGestureInProgress(bool inProgress) {
-    transform->setGestureInProgress(inProgress);
+    impl->transform.setGestureInProgress(inProgress);
     update(Update::Repaint);
 }
 
 bool Map::isGestureInProgress() const {
-    return transform->isGestureInProgress();
+    return impl->transform.isGestureInProgress();
 }
 
 bool Map::isRotating() const {
-    return transform->isRotating();
+    return impl->transform.isRotating();
 }
 
 bool Map::isScaling() const {
-    return transform->isScaling();
+    return impl->transform.isScaling();
 }
 
 bool Map::isPanning() const {
-    return transform->isPanning();
+    return impl->transform.isPanning();
 }
 
 #pragma mark -
 
 void Map::jumpTo(const CameraOptions& camera) {
-    transform->jumpTo(camera);
+    impl->transform.jumpTo(camera);
     update(camera.zoom ? Update::Zoom : Update::Repaint);
 }
 
 void Map::easeTo(const CameraOptions& camera, const AnimationOptions& animation) {
-    transform->easeTo(camera, animation);
+    impl->transform.easeTo(camera, animation);
     update(camera.zoom ? Update::Zoom : Update::Repaint);
 }
-    
-    
+
 void Map::flyTo(const CameraOptions& camera, const AnimationOptions& animation) {
-    transform->flyTo(camera, animation);
+    impl->transform.flyTo(camera, animation);
     update(Update::Zoom);
 }
 
 #pragma mark - Position
 
 void Map::moveBy(const ScreenCoordinate& point, const Duration& duration) {
-    transform->moveBy(point, duration);
+    impl->transform.moveBy(point, duration);
     update(Update::Repaint);
 }
 
@@ -152,17 +382,17 @@ void Map::setLatLng(const LatLng& latLng, const Duration& duration) {
 }
 
 void Map::setLatLng(const LatLng& latLng, const EdgeInsets& padding, const Duration& duration) {
-    transform->setLatLng(latLng, padding, duration);
+    impl->transform.setLatLng(latLng, padding, duration);
     update(Update::Repaint);
 }
 
 void Map::setLatLng(const LatLng& latLng, const ScreenCoordinate& point, const Duration& duration) {
-    transform->setLatLng(latLng, point, duration);
+    impl->transform.setLatLng(latLng, point, duration);
     update(Update::Repaint);
 }
 
 LatLng Map::getLatLng(const EdgeInsets& padding) const {
-    return transform->getLatLng(padding);
+    return impl->transform.getLatLng(padding);
 }
 
 void Map::resetPosition(const EdgeInsets& padding) {
@@ -174,7 +404,7 @@ void Map::resetPosition(const EdgeInsets& padding) {
         camera.padding = padding;
     }
     camera.zoom = 0;
-    transform->jumpTo(camera);
+    impl->transform.jumpTo(camera);
     update(Update::Zoom);
 }
 
@@ -182,17 +412,17 @@ void Map::resetPosition(const EdgeInsets& padding) {
 #pragma mark - Scale
 
 void Map::scaleBy(double ds, const ScreenCoordinate& point, const Duration& duration) {
-    transform->scaleBy(ds, point, duration);
+    impl->transform.scaleBy(ds, point, duration);
     update(Update::Zoom);
 }
 
 void Map::setScale(double scale, const ScreenCoordinate& point, const Duration& duration) {
-    transform->setScale(scale, point, duration);
+    impl->transform.setScale(scale, point, duration);
     update(Update::Zoom);
 }
 
 double Map::getScale() const {
-    return transform->getScale();
+    return impl->transform.getScale();
 }
 
 void Map::setZoom(double zoom, const Duration& duration) {
@@ -200,12 +430,12 @@ void Map::setZoom(double zoom, const Duration& duration) {
 }
 
 void Map::setZoom(double zoom, const EdgeInsets& padding, const Duration& duration) {
-    transform->setZoom(zoom, padding, duration);
+    impl->transform.setZoom(zoom, padding, duration);
     update(Update::Zoom);
 }
 
 double Map::getZoom() const {
-    return transform->getZoom();
+    return impl->transform.getZoom();
 }
 
 void Map::setLatLngZoom(const LatLng& latLng, double zoom, const Duration& duration) {
@@ -213,7 +443,7 @@ void Map::setLatLngZoom(const LatLng& latLng, double zoom, const Duration& durat
 }
 
 void Map::setLatLngZoom(const LatLng& latLng, double zoom, const EdgeInsets& padding, const Duration& duration) {
-    transform->setLatLngZoom(latLng, zoom, padding, duration);
+    impl->transform.setLatLngZoom(latLng, zoom, padding, duration);
     update(Update::Zoom);
 }
 
@@ -281,43 +511,41 @@ void Map::resetZoom() {
 }
 
 void Map::setMinZoom(const double minZoom) {
-    transform->setMinZoom(minZoom);
+    impl->transform.setMinZoom(minZoom);
     if (getZoom() < minZoom) {
         setZoom(minZoom);
     }
 }
 
 double Map::getMinZoom() const {
-    return transform->getState().getMinZoom();
+    return impl->transform.getState().getMinZoom();
 }
 
 void Map::setMaxZoom(const double maxZoom) {
-    transform->setMaxZoom(maxZoom);
+    impl->transform.setMaxZoom(maxZoom);
     if (getZoom() > maxZoom) {
         setZoom(maxZoom);
     }
 }
 
 double Map::getMaxZoom() const {
-    return transform->getState().getMaxZoom();
+    return impl->transform.getState().getMaxZoom();
 }
-
 
 #pragma mark - Size
 
 uint16_t Map::getWidth() const {
-    return transform->getState().getWidth();
+    return impl->transform.getState().getWidth();
 }
 
 uint16_t Map::getHeight() const {
-    return transform->getState().getHeight();
+    return impl->transform.getState().getHeight();
 }
-
 
 #pragma mark - Rotation
 
 void Map::rotateBy(const ScreenCoordinate& first, const ScreenCoordinate& second, const Duration& duration) {
-    transform->rotateBy(first, second, duration);
+    impl->transform.rotateBy(first, second, duration);
     update(Update::Repaint);
 }
 
@@ -326,24 +554,23 @@ void Map::setBearing(double degrees, const Duration& duration) {
 }
 
 void Map::setBearing(double degrees, const ScreenCoordinate& center, const Duration& duration) {
-    transform->setAngle(-degrees * util::DEG2RAD, center, duration);
+    impl->transform.setAngle(-degrees * util::DEG2RAD, center, duration);
     update(Update::Repaint);
 }
 
 void Map::setBearing(double degrees, const EdgeInsets& padding, const Duration& duration) {
-    transform->setAngle(-degrees * util::DEG2RAD, padding, duration);
+    impl->transform.setAngle(-degrees * util::DEG2RAD, padding, duration);
     update(Update::Repaint);
 }
 
 double Map::getBearing() const {
-    return -transform->getAngle() * util::RAD2DEG;
+    return -impl->transform.getAngle() * util::RAD2DEG;
 }
 
 void Map::resetNorth(const Duration& duration) {
-    transform->setAngle(0, duration);
+    impl->transform.setAngle(0, duration);
     update(Update::Repaint);
 }
-
 
 #pragma mark - Pitch
 
@@ -352,35 +579,34 @@ void Map::setPitch(double pitch, const Duration& duration) {
 }
 
 void Map::setPitch(double pitch, const ScreenCoordinate& anchor, const Duration& duration) {
-    transform->setPitch(pitch * util::DEG2RAD, anchor, duration);
+    impl->transform.setPitch(pitch * util::DEG2RAD, anchor, duration);
     update(Update::Repaint);
 }
 
 double Map::getPitch() const {
-    return transform->getPitch() * util::RAD2DEG;
+    return impl->transform.getPitch() * util::RAD2DEG;
 }
-
 
 #pragma mark - North Orientation
 
 void Map::setNorthOrientation(NorthOrientation orientation) {
-    transform->setNorthOrientation(orientation);
+    impl->transform.setNorthOrientation(orientation);
     update(Update::Repaint);
 }
 
 NorthOrientation Map::getNorthOrientation() const {
-    return transform->getNorthOrientation();
+    return impl->transform.getNorthOrientation();
 }
 
 #pragma mark - Constrain mode
 
 void Map::setConstrainMode(mbgl::ConstrainMode mode) {
-    transform->setConstrainMode(mode);
+    impl->transform.setConstrainMode(mode);
     update(Update::Repaint);
 }
 
 ConstrainMode Map::getConstrainMode() const {
-    return transform->getConstrainMode();
+    return impl->transform.getConstrainMode();
 }
 
 #pragma mark - Projection
@@ -398,25 +624,25 @@ LatLng Map::latLngForProjectedMeters(const ProjectedMeters& projectedMeters) con
 }
 
 ScreenCoordinate Map::pixelForLatLng(const LatLng& latLng) const {
-    return transform->latLngToScreenCoordinate(latLng);
+    return impl->transform.latLngToScreenCoordinate(latLng);
 }
 
 LatLng Map::latLngForPixel(const ScreenCoordinate& pixel) const {
-    return transform->screenCoordinateToLatLng(pixel);
+    return impl->transform.screenCoordinateToLatLng(pixel);
 }
 
 #pragma mark - Annotations
 
 void Map::addAnnotationIcon(const std::string& name, std::shared_ptr<const SpriteImage> sprite) {
-    context->addAnnotationIcon(name, sprite);
+    impl->data.getAnnotationManager()->addIcon(name, sprite);
 }
 
 void Map::removeAnnotationIcon(const std::string& name) {
-    context->removeAnnotationIcon(name);
+    impl->data.getAnnotationManager()->removeIcon(name);
 }
 
-double Map::getTopOffsetPixelsForAnnotationIcon(const std::string& symbol) {
-    return context->getTopOffsetPixelsForAnnotationIcon(symbol);
+double Map::getTopOffsetPixelsForAnnotationIcon(const std::string& name) {
+    return impl->data.getAnnotationManager()->getTopOffsetPixelsForIcon(name);
 }
 
 AnnotationID Map::addPointAnnotation(const PointAnnotation& annotation) {
@@ -424,7 +650,7 @@ AnnotationID Map::addPointAnnotation(const PointAnnotation& annotation) {
 }
 
 AnnotationIDs Map::addPointAnnotations(const std::vector<PointAnnotation>& annotations) {
-    auto result = data->getAnnotationManager()->addPointAnnotations(annotations, getMaxZoom());
+    auto result = impl->data.getAnnotationManager()->addPointAnnotations(annotations, getMaxZoom());
     update(Update::Annotations);
     return result;
 }
@@ -434,13 +660,13 @@ AnnotationID Map::addShapeAnnotation(const ShapeAnnotation& annotation) {
 }
 
 AnnotationIDs Map::addShapeAnnotations(const std::vector<ShapeAnnotation>& annotations) {
-    auto result = data->getAnnotationManager()->addShapeAnnotations(annotations, getMaxZoom());
+    auto result = impl->data.getAnnotationManager()->addShapeAnnotations(annotations, getMaxZoom());
     update(Update::Annotations);
     return result;
 }
 
 void Map::updatePointAnnotation(AnnotationID annotationId, const PointAnnotation& annotation) {
-    data->getAnnotationManager()->updatePointAnnotation(annotationId, annotation, getMaxZoom());
+    impl->data.getAnnotationManager()->updatePointAnnotation(annotationId, annotation, getMaxZoom());
     update(Update::Annotations);
 }
 
@@ -449,12 +675,12 @@ void Map::removeAnnotation(AnnotationID annotation) {
 }
 
 void Map::removeAnnotations(const AnnotationIDs& annotations) {
-    data->getAnnotationManager()->removeAnnotations(annotations);
+    impl->data.getAnnotationManager()->removeAnnotations(annotations);
     update(Update::Annotations);
 }
 
 AnnotationIDs Map::getPointAnnotationsInBounds(const LatLngBounds& bounds) {
-    return data->getAnnotationManager()->getPointAnnotationsInBounds(bounds);
+    return impl->data.getAnnotationManager()->getPointAnnotationsInBounds(bounds);
 }
 
 #pragma mark - Style API
@@ -465,101 +691,135 @@ void Map::addCustomLayer(const std::string& id,
                          CustomLayerDeinitializeFunction deinitialize,
                          void* context_,
                          const char* before) {
-    view.activate();
-    context->addLayer(
+    impl->view.activate();
+
+    impl->style->addLayer(
         std::make_unique<CustomLayer>(id, initialize, render_, deinitialize, context_),
         before ? std::string(before) : optional<std::string>());
-    view.deactivate();
+    impl->updateFlags |= Update::Classes;
+    impl->asyncUpdate.send();
+
+    impl->view.deactivate();
 }
 
 void Map::removeCustomLayer(const std::string& id) {
-    view.activate();
-    context->removeLayer(id);
-    view.deactivate();
+    impl->view.activate();
+
+    impl->style->removeLayer(id);
+    impl->updateFlags |= Update::Classes;
+    impl->asyncUpdate.send();
+
+    impl->view.deactivate();
 }
 
 #pragma mark - Toggles
 
 void Map::setDebug(MapDebugOptions mode) {
-    data->setDebug(mode);
+    impl->data.setDebug(mode);
     update(Update::Repaint);
 }
 
 void Map::cycleDebugOptions() {
-    data->cycleDebugOptions();
+    impl->data.cycleDebugOptions();
     update(Update::Repaint);
 }
 
 MapDebugOptions Map::getDebug() const {
-    return data->getDebug();
+    return impl->data.getDebug();
 }
 
 bool Map::isFullyLoaded() const {
-    return context->isLoaded();
+    return impl->style->isLoaded();
 }
 
 void Map::addClass(const std::string& klass) {
-    if (data->addClass(klass)) {
+    if (impl->data.addClass(klass)) {
         update(Update::Classes);
     }
 }
 
 void Map::removeClass(const std::string& klass) {
-    if (data->removeClass(klass)) {
+    if (impl->data.removeClass(klass)) {
         update(Update::Classes);
     }
 }
 
 void Map::setClasses(const std::vector<std::string>& classes) {
-    data->setClasses(classes);
+    impl->data.setClasses(classes);
     update(Update::Classes);
 }
 
 bool Map::hasClass(const std::string& klass) const {
-    return data->hasClass(klass);
+    return impl->data.hasClass(klass);
 }
 
 std::vector<std::string> Map::getClasses() const {
-    return data->getClasses();
+    return impl->data.getClasses();
 }
 
 void Map::setDefaultFadeDuration(const Duration& duration) {
-    data->setDefaultFadeDuration(duration);
+    impl->data.setDefaultFadeDuration(duration);
     update(Update::Classes);
 }
 
 Duration Map::getDefaultFadeDuration() const {
-    return data->getDefaultFadeDuration();
+    return impl->data.getDefaultFadeDuration();
 }
 
 void Map::setDefaultTransitionDuration(const Duration& duration) {
-    data->setDefaultTransitionDuration(duration);
+    impl->data.setDefaultTransitionDuration(duration);
     update(Update::DefaultTransition);
 }
 
 Duration Map::getDefaultTransitionDuration() const {
-    return data->getDefaultTransitionDuration();
+    return impl->data.getDefaultTransitionDuration();
 }
 
 void Map::setDefaultTransitionDelay(const Duration& delay) {
-    data->setDefaultTransitionDelay(delay);
+    impl->data.setDefaultTransitionDelay(delay);
     update(Update::DefaultTransition);
 }
 
 Duration Map::getDefaultTransitionDelay() const {
-    return data->getDefaultTransitionDelay();
+    return impl->data.getDefaultTransitionDelay();
 }
 
 void Map::setSourceTileCacheSize(size_t size) {
-    context->setSourceTileCacheSize(size);
+    if (size != impl->sourceCacheSize) {
+        impl->sourceCacheSize = size;
+        if (!impl->style) return;
+        impl->style->setSourceTileCacheSize(size);
+        impl->view.invalidate();
+    }
 }
 
 void Map::onLowMemory() {
-    context->onLowMemory();
+    if (!impl->style) return;
+    impl->style->onLowMemory();
+    impl->view.invalidate();
+}
+
+void Map::Impl::onResourceLoaded() {
+    updateFlags |= Update::Repaint;
+    asyncUpdate.send();
+}
+
+void Map::Impl::onResourceError(std::exception_ptr error) {
+    if (data.mode == MapMode::Still && callback) {
+        callback(error, {});
+        callback = nullptr;
+    }
 }
 
 void Map::dumpDebugLogs() const {
-    context->dumpDebugLogs();
+    Log::Info(Event::General, "--------------------------------------------------------------------------------");
+    Log::Info(Event::General, "MapContext::styleURL: %s", impl->styleURL.c_str());
+    if (impl->style) {
+        impl->style->dumpDebugLogs();
+    } else {
+        Log::Info(Event::General, "no style loaded");
+    }
+    Log::Info(Event::General, "--------------------------------------------------------------------------------");
 }
 
 } // namespace mbgl
