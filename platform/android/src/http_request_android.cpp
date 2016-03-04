@@ -95,6 +95,11 @@ HTTPAndroidContext::~HTTPAndroidContext() {
     JNIEnv *env = nullptr;
     bool detach = mbgl::android::attach_jni_thread(vm, &env, "HTTPAndroidContext::~HTTPAndroidContext()");
 
+    env->CallStaticVoidMethod(mbgl::android::httpContextClass, mbgl::android::httpContextInvalidateId);
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+    }
+
     env->DeleteGlobalRef(obj);
     obj = nullptr;
 
@@ -168,6 +173,8 @@ void HTTPAndroidRequest::cancel() {
     }
 
     mbgl::android::detach_jni_thread(context->vm, &env, detach);
+
+    delete this;
 }
 
 void HTTPAndroidRequest::finish() {

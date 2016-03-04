@@ -97,6 +97,7 @@ extern jfieldID rectFBottomId;
 
 extern jclass httpContextClass;
 extern jmethodID httpContextGetInstanceId;
+extern jmethodID httpContextInvalidateId;
 extern jmethodID httpContextCreateRequestId;
 
 extern jclass httpRequestClass;

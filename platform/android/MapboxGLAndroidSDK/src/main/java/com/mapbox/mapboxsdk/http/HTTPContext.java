@@ -25,15 +25,16 @@ class HTTPContext {
     private static final int CONNECTION_ERROR = 0;
     private static final int TEMPORARY_ERROR = 1;
     private static final int PERMANENT_ERROR = 2;
-    private static final int CANCELED_ERROR = 3;
 
     private static HTTPContext mInstance = null;
 
     private OkHttpClient mClient;
+    private boolean mValid;
 
     private HTTPContext() {
         super();
         mClient = new OkHttpClient();
+        mValid = true;
         //mClient.interceptors().add(new LoggingInterceptor());
     }
 
@@ -45,13 +46,22 @@ class HTTPContext {
         return mInstance;
     }
 
+    public static void invalidate() {
+        getInstance().mValid = false;
+    }
+
+    boolean isValid() {
+        return mValid;
+    }
+
     public HTTPRequest createRequest(long nativePtr, String resourceUrl, String userAgent, String etag, String modified) {
-        return new HTTPRequest(nativePtr, resourceUrl, userAgent, etag, modified);
+        return new HTTPRequest(this, nativePtr, resourceUrl, userAgent, etag, modified);
     }
 
     public class HTTPRequest implements Callback {
         private final String LOG_TAG = HTTPRequest.class.getName();
 
+        private HTTPContext mContext;
         private long mNativePtr = 0;
 
         private Call mCall;
@@ -60,7 +70,8 @@ class HTTPContext {
         private native void nativeOnFailure(long nativePtr, int type, String message);
         private native void nativeOnResponse(long nativePtr, int code, String message, String etag, String modified, String cacheControl, String expires, byte[] body);
 
-        private HTTPRequest(long nativePtr, String resourceUrl, String userAgent, String etag, String modified) {
+        private HTTPRequest(HTTPContext context, long nativePtr, String resourceUrl, String userAgent, String etag, String modified) {
+            mContext = context;
             mNativePtr = nativePtr;
             Request.Builder builder = new Request.Builder().url(resourceUrl).tag(resourceUrl.toLowerCase(MapboxConstants.MAPBOX_LOCALE)).addHeader("User-Agent", userAgent);
             if (etag.length() > 0) {
@@ -72,7 +83,7 @@ class HTTPContext {
         }
 
         public void start() {
-            mCall = HTTPContext.getInstance().mClient.newCall(mRequest);
+            mCall = mContext.mClient.newCall(mRequest);
             mCall.enqueue(this);
         }
 
@@ -82,6 +93,10 @@ class HTTPContext {
 
         @Override
         public void onResponse(Call call, Response response) throws IOException {
+            if (call.isCanceled() || !mContext.isValid()) {
+                return;
+            }
+
             if (response.isSuccessful()) {
                 Log.v(LOG_TAG, String.format("[HTTP] Request was successful (code = %d).", response.code()));
             } else {
@@ -108,6 +123,10 @@ class HTTPContext {
 
         @Override
         public void onFailure(Call call, IOException e) {
+            if (call.isCanceled() || !mContext.isValid()) {
+                return;
+            }
+
             Log.w(LOG_TAG, String.format("[HTTP] Request could not be executed: %s", e.getMessage()));
 
             int type = PERMANENT_ERROR;
@@ -115,8 +134,6 @@ class HTTPContext {
                 type = CONNECTION_ERROR;
             } else if ((e instanceof InterruptedIOException)) {
                 type = TEMPORARY_ERROR;
-            } else if (mCall.isCanceled()) {
-                type = CANCELED_ERROR;
             }
 
             String errorMessage = e.getMessage() != null ? e.getMessage() : "Error processing the request";

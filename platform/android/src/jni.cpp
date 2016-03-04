@@ -103,6 +103,7 @@ jfieldID rectFBottomId = nullptr;
 
 jclass httpContextClass = nullptr;
 jmethodID httpContextGetInstanceId = nullptr;
+jmethodID httpContextInvalidateId = nullptr;
 jmethodID httpContextCreateRequestId = nullptr;
 
 jclass httpRequestClass = nullptr;
@@ -2499,6 +2500,12 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
         return JNI_ERR;
     }
 
+    httpContextInvalidateId = env->GetStaticMethodID(httpContextClass, "invalidate", "()V");
+    if (httpContextInvalidateId == nullptr) {
+        env->ExceptionDescribe();
+        return JNI_ERR;
+    }
+
     httpContextCreateRequestId = env->GetMethodID(httpContextClass, "createRequest", "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lcom/mapbox/mapboxsdk/http/HTTPContext$HTTPRequest;");
     if (httpContextCreateRequestId == nullptr) {
         env->ExceptionDescribe();
@@ -3490,6 +3497,7 @@ extern "C" JNIEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
 
     env->DeleteGlobalRef(httpContextClass);
     httpContextGetInstanceId = nullptr;
+    httpContextInvalidateId = nullptr;
     httpContextCreateRequestId = nullptr;
 
     env->DeleteGlobalRef(httpRequestClass);
