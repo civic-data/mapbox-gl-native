@@ -4,7 +4,7 @@
 #import "MGLGeometry_Private.h"
 #import "MGLStyle.h"
 
-@interface MGLTilePyramidDownloadRegion ()
+@interface MGLTilePyramidDownloadRegion () <MGLDownloadRegion_Private>
 
 @property (nonatomic, readwrite, null_resettable) NSURL *styleURL;
 

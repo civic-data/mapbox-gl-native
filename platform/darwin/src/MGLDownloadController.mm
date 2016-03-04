@@ -23,7 +23,7 @@
     static dispatch_once_t onceToken;
     static MGLDownloadController *sharedController;
     dispatch_once(&onceToken, ^{
-        sharedController = [[self alloc] initWithName:@"offline.db"];
+        sharedController = [[self alloc] initWithFileName:@"offline.db"];
     });
     return sharedController;
 }
