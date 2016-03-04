@@ -38,13 +38,23 @@ TEST(Style, UnusedSourceActiveViaClassUpdate) {
     StubFileSource fileSource;
     Style style { data, fileSource };
 
-    data.addClass("visible");
-
     style.setJSON(util::read_file("test/fixtures/resources/style-unused-sources.json"), "");
+    EXPECT_TRUE(style.addClass("visible"));
+    EXPECT_TRUE(style.hasClass("visible"));
+
     style.cascade();
     style.recalculate(0);
 
     Source *unusedSource = style.getSource("unusedsource");
     EXPECT_TRUE(unusedSource);
     EXPECT_TRUE(unusedSource->isLoaded());
+
+    // Style classes should be cleared upon new style load.
+    style.setJSON(util::read_file("test/fixtures/resources/style-unused-sources.json"), "");
+    EXPECT_FALSE(style.hasClass("visible"));
+
+    style.cascade();
+    style.recalculate(0);
+
+    EXPECT_FALSE(unusedSource->isLoaded());
 }

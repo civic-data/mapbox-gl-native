@@ -55,11 +55,17 @@ public:
     void removeAnnotationIcon(const std::string&);
     double getTopOffsetPixelsForAnnotationIcon(const std::string&);
     void updateAnnotations();
-    
+
     // Style API
     void addLayer(std::unique_ptr<StyleLayer>,
                   const optional<std::string> before);
     void removeLayer(const std::string& id);
+
+    std::vector<std::string> getClasses() const;
+    bool hasClass(const std::string&) const;
+    void addClass(const std::string&);
+    void removeClass(const std::string&);
+    void setClasses(const std::vector<std::string>&);
 
     void setSourceTileCacheSize(size_t size);
     void onLowMemory();
