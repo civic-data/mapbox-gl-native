@@ -7,7 +7,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface MGLTilePyramidDownloadRegion : NSObject <MGLDownloadRegion>
 
-@property (nonatomic, readonly) NSURL *styleURL;
 @property (nonatomic, readonly) MGLCoordinateBounds bounds;
 @property (nonatomic, readonly) double minimumZoomLevel;
 @property (nonatomic, readonly) double maximumZoomLevel;

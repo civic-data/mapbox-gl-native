@@ -62,29 +62,40 @@
 }
 
 - (void)addDownloadableForRegion:(id <MGLDownloadRegion>)downloadRegion withContext:(NSData *)context completionHandler:(MGLDownloadableRegistrationCompletionHandler)completion {
-    if (![downloadRegion conformsToProtocol:@protocol(MGLDownloadRegion_Private)]) {
+    if (![downloadRegion isKindOfClass:[MGLTilePyramidDownloadRegion class]]) {
         [NSException raise:@"Unsupported region type" format:
-         @"Regions of type %@ are unsupported.", NSStringFromClass(downloadRegion.class)];
+         @"Regions of type %@ are unsupported.", NSStringFromClass([downloadRegion class])];
         return;
     }
     
-    const mbgl::OfflineRegionDefinition regionDefinition = [(id <MGLDownloadRegion_Private>)downloadRegion offlineRegionDefinition];
-    mbgl::OfflineRegionMetadata metadata;
-    metadata.reserve(context.length);
-    [context getBytes:&metadata length:metadata.capacity()];
-    _mbglFileSource->createOfflineRegion(regionDefinition, metadata, [&](std::exception_ptr exception, mbgl::optional<mbgl::OfflineRegion> region) {
-        dispatch_async(dispatch_get_main_queue(), [&](void) {
-            NSError *error;
-            if (exception) {
-                error = [NSError errorWithDomain:MGLErrorDomain code:-1 userInfo:@{
-                    NSLocalizedDescriptionKey: @(mbgl::util::toString(exception).c_str()),
-                }];
-            }
-            if (completion) {
-                MGLDownloadable *downloadable = [[MGLDownloadable alloc] initWithMBGLRegion:new mbgl::OfflineRegion(std::move(*region))];
+    MGLTilePyramidDownloadRegion *tilePyramidDownloadRegion = (MGLTilePyramidDownloadRegion *)downloadRegion;
+#if TARGET_OS_IPHONE || TARGET_OS_SIMULATOR
+    const float scaleFactor = [UIScreen instancesRespondToSelector:@selector(nativeScale)] ? [[UIScreen mainScreen] nativeScale] : [[UIScreen mainScreen] scale];
+#elif TARGET_OS_MAC
+    const float scaleFactor = [NSScreen mainScreen].backingScaleFactor;
+#endif
+    NSString *styleURLString = [tilePyramidDownloadRegion.styleURL.absoluteString copy];
+    const mbgl::OfflineTilePyramidRegionDefinition regionDefinition(styleURLString.UTF8String,
+                                                                    MGLLatLngBoundsFromCoordinateBounds(tilePyramidDownloadRegion.bounds),
+                                                                    tilePyramidDownloadRegion.minimumZoomLevel,
+                                                                    tilePyramidDownloadRegion.maximumZoomLevel,
+                                                                    scaleFactor);
+    mbgl::OfflineRegionMetadata metadata(context.length);
+    [context getBytes:&metadata[0] length:metadata.capacity()];
+    _mbglFileSource->createOfflineRegion(regionDefinition, metadata, [&, completion](std::exception_ptr exception, mbgl::optional<mbgl::OfflineRegion> region) {
+        NSError *error;
+        if (exception) {
+            NSString *errorDescription = @(mbgl::util::toString(exception).c_str());
+            error = [NSError errorWithDomain:MGLErrorDomain code:-1 userInfo:errorDescription ? @{
+                NSLocalizedDescriptionKey: errorDescription,
+            } : nil];
+        }
+        if (completion) {
+            MGLDownloadable *downloadable = [[MGLDownloadable alloc] initWithMBGLRegion:new mbgl::OfflineRegion(std::move(*region))];
+            dispatch_async(dispatch_get_main_queue(), [&, completion, error, downloadable](void) {
                 completion(downloadable, error);
-            }
-        });
+            });
+        }
     });
 }
 
@@ -96,9 +107,25 @@
     _mbglFileSource->setOfflineRegionDownloadState(*downloadable.mbglOfflineRegion, mbgl::OfflineRegionDownloadState::Inactive);
 }
 
+- (void)cancelDownloadable:(MGLDownloadable *)downloadable withCompletionHandler:(MGLDownloadableCancellationCompletionHandler)completion {
+    _mbglFileSource->deleteOfflineRegion(std::move(*downloadable.mbglOfflineRegion), [&, completion](std::exception_ptr exception) {
+        dispatch_async(dispatch_get_main_queue(), [&, completion](void) {
+            NSError *error;
+            if (exception) {
+                error = [NSError errorWithDomain:MGLErrorDomain code:-1 userInfo:@{
+                    NSLocalizedDescriptionKey: @(mbgl::util::toString(exception).c_str()),
+                }];
+            }
+            if (completion) {
+                completion(error);
+            }
+        });
+    });
+}
+
 - (void)requestDownloadablesWithCompletionHandler:(MGLDownloadablesRequestCompletionHandler)completion {
-    _mbglFileSource->listOfflineRegions([&](std::exception_ptr exception, mbgl::optional<std::vector<mbgl::OfflineRegion>> regions) {
-        dispatch_async(dispatch_get_main_queue(), [&](void) {
+    _mbglFileSource->listOfflineRegions([&, completion](std::exception_ptr exception, mbgl::optional<std::vector<mbgl::OfflineRegion>> regions) {
+        dispatch_async(dispatch_get_main_queue(), [&, completion](void) {
             NSError *error;
             if (exception) {
                 error = [NSError errorWithDomain:MGLErrorDomain code:-1 userInfo:@{

@@ -62,6 +62,11 @@ class MBGLOfflineRegionObserver;
     self.state = MGLDownloadableStateInactive;
 }
 
+- (void)cancelWithCompletionHandler:(MGLDownloadableCancellationCompletionHandler)completion {
+    [[MGLDownloadController sharedController] cancelDownloadable:self withCompletionHandler:completion];
+    self.state = MGLDownloadableStateInactive;
+}
+
 MGLDownloadableState MGLDownloadableStateFromOfflineRegionDownloadState(mbgl::OfflineRegionDownloadState offlineRegionDownloadState) {
     switch (offlineRegionDownloadState) {
         case mbgl::OfflineRegionDownloadState::Inactive:

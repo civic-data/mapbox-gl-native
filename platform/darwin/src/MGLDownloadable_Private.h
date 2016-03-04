@@ -6,7 +6,7 @@ class MBGLOfflineRegionObserver;
 
 @interface MGLDownloadable (Private)
 
-@property (nonatomic, readonly) mbgl::OfflineRegion *mbglOfflineRegion;
+@property (nonatomic) mbgl::OfflineRegion *mbglOfflineRegion;
 @property (nonatomic, readonly) MBGLOfflineRegionObserver *mbglOfflineRegionObserver;
 
 - (instancetype)initWithMBGLRegion:(mbgl::OfflineRegion *)region;

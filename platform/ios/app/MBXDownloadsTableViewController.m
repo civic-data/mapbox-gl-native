@@ -4,6 +4,18 @@
 
 static NSString * const MBXDownloadContextNameKey = @"Name";
 
+@implementation MGLDownloadable (MBXAdditions)
+
+- (NSString *)name {
+    NSDictionary *userInfo = [NSKeyedUnarchiver unarchiveObjectWithData:self.context];
+    NSAssert([userInfo isKindOfClass:[NSDictionary class]], @"Context of downloadable isn’t a dictionary.");
+    NSString *name = userInfo[MBXDownloadContextNameKey];
+    NSAssert([name isKindOfClass:[NSString class]], @"Name of downloadable isn’t a string.");
+    return name;
+}
+
+@end
+
 @interface MBXDownloadsTableViewController () <MGLDownloadableDelegate>
 
 @property (nonatomic, strong) NS_MUTABLE_ARRAY_OF(MGLDownloadable *) *downloadables;
@@ -61,7 +73,10 @@ static NSString * const MBXDownloadContextNameKey = @"Name";
                 [alertController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
                 [self presentViewController:alertController animated:YES completion:nil];
             } else {
+                downloadable.delegate = strongSelf;
+                NSIndexPath *indexPath = [NSIndexPath indexPathForRow:strongSelf.downloadables.count inSection:0];
                 [strongSelf.downloadables addObject:downloadable];
+                [strongSelf.tableView insertRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
             }
         }];
     }];
@@ -81,11 +96,7 @@ static NSString * const MBXDownloadContextNameKey = @"Name";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"Download" forIndexPath:indexPath];
     
     MGLDownloadable *downloadable = self.downloadables[indexPath.row];
-    NSDictionary *userInfo = [NSKeyedUnarchiver unarchiveObjectWithData:downloadable.context];
-    NSAssert([userInfo isKindOfClass:[NSDictionary class]], @"Context of downloadable isn’t a dictionary.");
-    NSString *name = userInfo[MBXDownloadContextNameKey];
-    NSAssert([name isKindOfClass:[NSString class]], @"Name of downloadable isn’t a string.");
-    cell.textLabel.text = name;
+    cell.textLabel.text = downloadable.name;
     
     return cell;
 }
@@ -123,5 +134,19 @@ static NSString * const MBXDownloadContextNameKey = @"Name";
     return YES;
 }
 */
+
+#pragma mark - Downloadable delegate
+
+- (void)downloadable:(MGLDownloadable *)downloadable progressDidChange:(MGLDownloadableProgress)progress {
+    NSLog(@"Downloadable “%@” reached %f%%.", downloadable.name, round(progress.countOfResourcesCompleted / progress.countOfResourcesExpected * 100));
+}
+
+- (void)downloadable:(MGLDownloadable *)downloadable didReceiveError:(NSError *)error {
+    NSLog(@"Downloadable “%@” received error: %@", downloadable.name, error.localizedFailureReason);
+}
+
+- (void)downloadable:(MGLDownloadable *)downloadable didReceiveMaximumAllowedMapboxTiles:(uint64_t)maximumCount {
+    NSLog(@"Downloadable “%@” reached limit of %llu tiles.", downloadable.name, maximumCount);
+}
 
 @end

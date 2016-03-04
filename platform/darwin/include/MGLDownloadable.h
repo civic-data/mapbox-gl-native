@@ -19,6 +19,8 @@ typedef struct MGLDownloadableProgress {
     uint64_t maximumResourcesExpected;
 } MGLDownloadableProgress;
 
+typedef void (^MGLDownloadableCancellationCompletionHandler)(NSError *error);
+
 @interface MGLDownloadable : NSObject
 
 @property (nonatomic, readonly) id <MGLDownloadRegion> region;
@@ -31,6 +33,7 @@ typedef struct MGLDownloadableProgress {
 
 - (void)resume;
 - (void)suspend;
+- (void)cancelWithCompletionHandler:(MGLDownloadableCancellationCompletionHandler)completion;
 
 @end
 

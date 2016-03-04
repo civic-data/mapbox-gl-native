@@ -6,11 +6,13 @@
 
 @interface MGLTilePyramidDownloadRegion () <MGLDownloadRegion_Private>
 
-@property (nonatomic, readwrite, null_resettable) NSURL *styleURL;
-
 @end
 
-@implementation MGLTilePyramidDownloadRegion
+@implementation MGLTilePyramidDownloadRegion {
+    NSURL *_styleURL;
+}
+
+@synthesize styleURL = _styleURL;
 
 - (instancetype)init {
     [NSException raise:@"Method unavailable"
@@ -22,7 +24,16 @@
 
 - (instancetype)initWithStyleURL:(NSURL *)styleURL bounds:(MGLCoordinateBounds)bounds fromZoomLevel:(double)minimumZoomLevel toZoomLevel:(double)maximumZoomLevel {
     if (self = [super init]) {
-        self.styleURL = styleURL;
+        if (!styleURL) {
+            styleURL = [MGLStyle streetsStyleURL];
+        }
+        
+        if (!styleURL.scheme) {
+            // Assume a relative path into the application bundle.
+            styleURL = [NSURL URLWithString:[@"asset://" stringByAppendingString:styleURL.absoluteString]];
+        }
+        
+        _styleURL = styleURL;
         _bounds = bounds;
         _minimumZoomLevel = minimumZoomLevel;
         _maximumZoomLevel = maximumZoomLevel;
@@ -34,19 +45,6 @@
     NSURL *styleURL = [NSURL URLWithString:@(definition.styleURL.c_str())];
     MGLCoordinateBounds bounds = MGLCoordinateBoundsFromLatLngBounds(definition.bounds);
     return [self initWithStyleURL:styleURL bounds:bounds fromZoomLevel:definition.minZoom toZoomLevel:definition.maxZoom];
-}
-
-- (void)setStyleURL:(NSURL *)styleURL {
-    if (!styleURL) {
-        styleURL = [MGLStyle streetsStyleURL];
-    }
-    
-    if (!styleURL.scheme) {
-        // Assume a relative path into the application bundle.
-        styleURL = [NSURL URLWithString:[@"asset://" stringByAppendingString:styleURL.absoluteString]];
-    }
-    
-    _styleURL = styleURL;
 }
 
 - (const mbgl::OfflineRegionDefinition)offlineRegionDefinition {
